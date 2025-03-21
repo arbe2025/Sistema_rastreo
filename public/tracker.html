@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tracker Chofer - ARBE Transportes</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="description" content="Aplicación de rastreo para choferes de ARBE Transportes">
+    <link rel="apple-touch-icon" href="/icon.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex flex-col items-center min-h-screen p-6">
+    <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
+        <div class="flex justify-center mb-6">
+            <img src="ARBE_TRANSPORTES.png" alt="Logo ARBE" class="w-32">
+        </div>
+        <h1 class="text-2xl font-semibold text-gray-800 mb-4 text-center">Tracker de Chofer</h1>
+        <div class="mb-4">
+            <label for="deviceId" class="block text-sm font-medium text-gray-700">ID de Dispositivo</label>
+            <input type="text" id="deviceId" placeholder="Ej: 001" class="w-full p-2 mt-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <button id="btnStartTrip" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded transition duration-300 mb-2">Iniciar Viaje y Rastreo</button>
+        <button id="btnEndTrip" class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded transition duration-300" disabled>Finalizar Viaje</button>
+        <p class="mt-4 text-sm text-gray-700">Estado: <span id="status" class="font-semibold text-red-600">Desconectado</span></p>
+        <p id="error" class="mt-2 text-sm text-red-600"></p>
+        <p class="mt-2 text-sm text-gray-700">Ubicación: <span id="location">Esperando...</span></p>
+        <p class="mt-2 text-sm text-gray-700">Velocidad: <span id="speed">0 km/h</span></p>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        let socket;
+        let deviceId;
+        let trackingInterval;
+
+        const serverUrl = `${window.location.protocol}//${window.location.host}`;
+        const apiBaseUrl = serverUrl;
+        const socketUrl = serverUrl;
+
+        function startTracking() {
+            deviceId = document.getElementById('deviceId').value;
+            if (!deviceId) {
+                alert('Por favor ingrese un ID de dispositivo');
+                return;
+            }
+
+            socket = io(socketUrl);
+            document.getElementById('status').textContent = 'Conectado';
+            document.getElementById('status').classList.remove('text-red-600');
+            document.getElementById('status').classList.add('text-green-600');
+
+            socket.on('connect', () => {
+                console.log('Conectado al servidor');
+                socket.emit('registerDevice', deviceId);
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('Error de conexión:', error);
+                document.getElementById('status').textContent = 'Error';
+                document.getElementById('status').classList.remove('text-green-600');
+                document.getElementById('status').classList.add('text-red-600');
+            });
+
+            socket.on('startTrip', () => {
+                alert('Viaje iniciado por el administrador');
+            });
+
+            socket.on('endTrip', () => {
+                alert('Viaje finalizado por el administrador');
+            });
+
+            socket.on('driverAlert', (message) => {
+                alert(message);
+            });
+
+            // Iniciar rastreo cada 2 segundos
+            trackingInterval = setInterval(trackLocation, 2000);
+        }
+
+        function trackLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const lat = position.coords.latitude;
+                        const lng = position.coords.longitude;
+                        const speed = position.coords.speed ? (position.coords.speed * 3.6).toFixed(1) : 0;
+                        document.getElementById('location').textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+                        document.getElementById('speed').textContent = `${speed} km/h`;
+                        console.log(`Enviando ubicación: ${lat}, ${lng} para ${deviceId}, velocidad: ${speed}`);
+                        fetch(`${apiBaseUrl}/api/location`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ deviceId, lat, lng, speed })
+                        })
+                        .then(response => {
+                            if (!response.ok) throw new Error(`Error ${response.status}: ${response.statusText}`);
+                            return response.json();
+                        })
+                        .then(data => {
+                            if (data.status === 'success') {
+                                console.log('Ubicación enviada');
+                                document.getElementById('error').textContent = '';
+                            } else {
+                                document.getElementById('error').textContent = 'Error: ' + (data.error || 'Desconocido');
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error al enviar ubicación:', error);
+                            document.getElementById('error').textContent = 'Error: ' + error.message;
+                        });
+                    },
+                    (error) => {
+                        console.error('Error al obtener geolocalización:', error);
+                        document.getElementById('error').textContent = 'Error de geolocalización: ' + error.message;
+                    },
+                    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+                );
+            } else {
+                alert('Geolocalización no soportada por este navegador');
+            }
+        }
+
+        function endTracking() {
+            if (trackingInterval) {
+                clearInterval(trackingInterval);
+                socket.emit('endTrip', deviceId);
+                document.getElementById('btnStartTrip').disabled = false;
+                document.getElementById('btnEndTrip').disabled = true;
+                document.getElementById('status').textContent = 'Desconectado';
+                document.getElementById('status').classList.remove('text-green-600');
+                document.getElementById('status').classList.add('text-red-600');
+                alert('Viaje finalizado');
+            }
+        }
+
+        document.getElementById('btnStartTrip').addEventListener('click', () => {
+            startTracking();
+            document.getElementById('btnStartTrip').disabled = true;
+            document.getElementById('btnEndTrip').disabled = false;
+            socket.emit('startTrip', deviceId);
+            alert('Viaje iniciado');
+        });
+
+        document.getElementById('btnEndTrip').addEventListener('click', endTracking);
+
+        window.onbeforeunload = () => {
+            if (trackingInterval) clearInterval(trackingInterval);
+        };
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js')
+                .then(registration => console.log('Service Worker registrado:', registration))
+                .catch(error => console.error('Error al registrar Service Worker:', error));
+        }
+    </script>
+</body>
+</html>
