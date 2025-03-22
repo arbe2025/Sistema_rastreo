@@ -2,11 +2,23 @@ const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
 const socketIo = require('socket.io');
+const http = require('http');
 const twilio = require('twilio');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+// Crear servidor HTTP
+const server = http.createServer(app);
+
+// Configurar Socket.IO
+const io = socketIo(server, {
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST']
+    }
+});
 
 // Middleware
 app.use(cors({
@@ -26,8 +38,7 @@ const db = mysql.createPool({
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    connectTimeout: 30000,
-    acquireTimeout: 30000
+    connectTimeout: 30000
 });
 
 // Verificar conexión inicial
@@ -53,19 +64,88 @@ if (!accountSid || !authToken || !twilioPhoneNumber || !recipientPhoneNumber) {
 
 const twilioClient = twilio(accountSid, authToken);
 
-// Iniciar el servidor
-const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`Servidor corriendo en puerto ${port}`);
-});
+// Variable para controlar si se pueden enviar SMS
+let canSendSMS = true;
 
-// Configurar Socket.IO
-const io = socketIo(server, {
-    cors: {
-        origin: '*',
-        methods: ['GET', 'POST']
-    }
-});
+// Objeto para rastrear el tiempo de la última alerta por dispositivo
+const alertSent = {};
 
+// Función para verificar inactividad y enviar SMS
+const checkInactivity = () => {
+    console.log('Verificando inactividad...');
+    const query = `
+        SELECT l.device_id, MAX(l.timestamp) as last_update, l.lat, l.lng, d.name 
+        FROM locations l
+        LEFT JOIN devices d ON l.device_id = d.device_id
+        GROUP BY l.device_id
+    `;
+    db.query(query, (err, results) => {
+        if (err) {
+            console.error('Error al verificar inactividad:', err);
+            return;
+        }
+        if (!results || results.length === 0) {
+            console.log('No hay ubicaciones registradas para verificar inactividad');
+            return;
+        }
+
+        const now = new Date();
+        results.forEach(location => {
+            const deviceId = location.device_id;
+            const lastUpdate = new Date(location.last_update);
+            const diffInMinutes = (now - lastUpdate) / (1000 * 60);
+            console.log(`Dispositivo ${deviceId}: ${diffInMinutes.toFixed(2)} minutos desde última actualización`);
+
+            // Detectar inactividad después de 2 minutos
+            if (diffInMinutes >= 2) {
+                const driverName = location.name || `Chofer ${deviceId}`;
+                const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+                const message = `${driverName} (ID: ${deviceId}) lleva más de 2 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
+                console.log('Detectada inactividad:', message);
+
+                // Enviar alerta al dashboard
+                io.emit('adminAlert', { deviceId, message });
+
+                // Enviar SMS solo si no se ha enviado antes para este período de inactividad y si está permitido
+                if (!alertSent[deviceId] && canSendSMS) {
+                    console.log(`Enviando SMS para ${deviceId}`);
+                    twilioClient.messages
+                        .create({
+                            body: message,
+                            from: twilioPhoneNumber,
+                            to: recipientPhoneNumber
+                        })
+                        .then(msg => {
+                            console.log(`SMS enviado con SID: ${msg.sid}`);
+                            alertSent[deviceId] = true; // Marcar como enviado
+                        })
+                        .catch(error => {
+                            console.error('Error al enviar SMS:', error.message, error.code);
+                            if (error.message.includes('exceeded the null daily messages limit')) {
+                                canSendSMS = false; // Desactivar envío de SMS si se excede el límite
+                                console.log('Límite diario de SMS alcanzado. Desactivando envío de SMS.');
+                            }
+                        });
+                } else if (!canSendSMS) {
+                    console.log(`No se puede enviar SMS para ${deviceId}: límite diario alcanzado`);
+                } else {
+                    console.log(`SMS ya enviado previamente para ${deviceId}`);
+                }
+            } else {
+                // Reiniciar la bandera si el dispositivo se mueve (menos de 2 minutos)
+                if (alertSent[deviceId]) {
+                    console.log(`Reiniciando alerta para ${deviceId} - ahora activo`);
+                    alertSent[deviceId] = false;
+                }
+            }
+        });
+    });
+};
+
+// Verificar inactividad cada 15 segundos
+setInterval(checkInactivity, 15000);
+
+// Configuración de Socket.IO
 io.on('connection', (socket) => {
     console.log('Cliente conectado:', socket.id);
     socket.on('registerDevice', (deviceId) => {
@@ -196,77 +276,10 @@ app.get('/api/routes', (req, res) => {
     });
 });
 
-// Objeto para rastrear el tiempo de la última alerta por dispositivo
-const alertSent = {};
-
-// Función para verificar inactividad y enviar SMS
-const checkInactivity = () => {
-    console.log('Verificando inactividad...');
-    const query = `
-        SELECT l.device_id, MAX(l.timestamp) as last_update, l.lat, l.lng, d.name 
-        FROM locations l
-        LEFT JOIN devices d ON l.device_id = d.device_id
-        GROUP BY l.device_id
-    `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error al verificar inactividad:', err);
-            return;
-        }
-        if (!results || results.length === 0) {
-            console.log('No hay ubicaciones registradas para verificar inactividad');
-            return;
-        }
-
-        const now = new Date();
-        results.forEach(location => {
-            const deviceId = location.device_id;
-            const lastUpdate = new Date(location.last_update);
-            const diffInMinutes = (now - lastUpdate) / (1000 * 60);
-            console.log(`Dispositivo ${deviceId}: ${diffInMinutes.toFixed(2)} minutos desde última actualización`);
-
-            // Detectar inactividad después de 2 minutos
-            if (diffInMinutes >= 2) {
-                const driverName = location.name || `Chofer ${deviceId}`;
-                const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-                const message = `${driverName} (ID: ${deviceId}) lleva más de 2 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
-                console.log('Detectada inactividad:', message);
-
-                // Enviar alerta al dashboard
-                io.emit('adminAlert', { deviceId, message });
-
-                // Enviar SMS solo si no se ha enviado antes para este período de inactividad
-                if (!alertSent[deviceId]) {
-                    console.log(`Enviando SMS para ${deviceId}`);
-                    twilioClient.messages
-                        .create({
-                            body: message,
-                            from: twilioPhoneNumber,
-                            to: recipientPhoneNumber
-                        })
-                        .then(msg => {
-                            console.log(`SMS enviado con SID: ${msg.sid}`);
-                            alertSent[deviceId] = true; // Marcar como enviado
-                        })
-                        .catch(error => {
-                            console.error('Error al enviar SMS:', error.message, error.code);
-                        });
-                } else {
-                    console.log(`SMS ya enviado previamente para ${deviceId}`);
-                }
-            } else {
-                // Reiniciar la bandera si el dispositivo se mueve (menos de 2 minutos)
-                if (alertSent[deviceId]) {
-                    console.log(`Reiniciando alerta para ${deviceId} - ahora activo`);
-                    alertSent[deviceId] = false;
-                }
-            }
-        });
-    });
-};
-
-// Verificar inactividad cada 15 segundos
-setInterval(checkInactivity, 15000);
+// Iniciar el servidor
+server.listen(port, '0.0.0.0', () => {
+    console.log(`Servidor corriendo en puerto ${port}`);
+});
 
 // Manejo de errores no capturados
 process.on('uncaughtException', (err) => {
