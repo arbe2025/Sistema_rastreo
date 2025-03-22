@@ -35,7 +35,7 @@
         let deviceId;
         let trackingInterval;
 
-        const serverUrl = `${window.location.protocol}//${window.location.host}`;
+        const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
         const socketUrl = serverUrl;
 
@@ -46,7 +46,9 @@
                 return;
             }
 
-            socket = io(socketUrl);
+            socket = io(socketUrl, {
+                timeout: 30000 // Aumentar el tiempo de espera a 30 segundos
+            });
             document.getElementById('status').textContent = 'Conectado';
             document.getElementById('status').classList.remove('text-red-600');
             document.getElementById('status').classList.add('text-green-600');
