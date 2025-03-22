@@ -297,7 +297,7 @@
         let directionsService;
         let directionsRenderer;
         let lastUpdateTimes = {};
-        const INACTIVITY_THRESHOLD = 8 * 60 * 1000;
+        const INACTIVITY_THRESHOLD = 7 * 60 * 1000; // Cambiado de 8 a 7 minutos
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
@@ -432,8 +432,8 @@
             const now = Date.now();
             const lastUpdate = lastUpdateTimes[deviceId] || 0;
             if (now - lastUpdate > INACTIVITY_THRESHOLD) {
-                socket.emit('inactivityAlert', { deviceId, message: `Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 8 min)` });
-                addAlertToLog(`Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 8 min)`);
+                socket.emit('inactivityAlert', { deviceId, message: `Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 7 min)` });
+                addAlertToLog(`Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 7 min)`);
             }
         }
 
