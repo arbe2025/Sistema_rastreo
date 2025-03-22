@@ -1,14 +1,14 @@
 {
-    "version": 2,
-    "builds": [
+    "rewrites": [
       {
-        "src": "server.js"
+        "source": "/(.*)",
+        "destination": "/index.html"
       }
     ],
-    "routes": [
+    "builds": [
       {
-        "src": "/(.*)",
-        "dest": "server.js"
+        "src": "public/**",
+        "use": "@vercel/static"
       }
     ]
   }
