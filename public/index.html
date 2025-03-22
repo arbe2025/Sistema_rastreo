@@ -8,7 +8,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Estilos completos de tu código */
         body {
             font-family: 'Inter', sans-serif;
             background-color: #F5F5F5;
@@ -275,7 +274,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Cargador dinámico de Google Maps -->
     <script>
         (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
@@ -321,7 +320,9 @@
                 directionsService = new google.maps.DirectionsService();
                 directionsRenderer = new google.maps.DirectionsRenderer({ suppressMarkers: true });
 
-                socket = io(socketUrl);
+                socket = io(socketUrl, {
+                    timeout: 30000 // Aumentar el tiempo de espera a 30 segundos
+                });
 
                 socket.on('connect', () => {
                     console.log('Conectado al servidor');
@@ -431,7 +432,7 @@
             const now = Date.now();
             const lastUpdate = lastUpdateTimes[deviceId] || 0;
             if (now - lastUpdate > INACTIVITY_THRESHOLD) {
-                socket.emit('checkInactivity', { deviceId });
+                socket.emit('inactivityAlert', { deviceId, message: `Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 8 min)` });
                 addAlertToLog(`Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 8 min)`);
             }
         }

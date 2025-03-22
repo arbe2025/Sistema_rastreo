@@ -15,8 +15,9 @@ const server = http.createServer(app);
 // Configurar Socket.IO
 const io = socketIo(server, {
     cors: {
-        origin: '*',
-        methods: ['GET', 'POST']
+        origin: 'https://sistema-rastreoarbe.vercel.app',
+        methods: ['GET', 'POST'],
+        credentials: true
     }
 });
 
@@ -109,23 +110,24 @@ const checkInactivity = () => {
                 // Enviar SMS solo si no se ha enviado antes para este período de inactividad y si está permitido
                 if (!alertSent[deviceId] && canSendSMS) {
                     console.log(`Enviando SMS para ${deviceId}`);
-                    twilioClient.messages
-                        .create({
-                            body: message,
-                            from: twilioPhoneNumber,
-                            to: recipientPhoneNumber
-                        })
-                        .then(msg => {
-                            console.log(`SMS enviado con SID: ${msg.sid}`);
-                            alertSent[deviceId] = true; // Marcar como enviado
-                        })
-                        .catch(error => {
-                            console.error('Error al enviar SMS:', error.message, error.code);
-                            if (error.message.includes('exceeded the null daily messages limit')) {
-                                canSendSMS = false; // Desactivar envío de SMS si se excede el límite
-                                console.log('Límite diario de SMS alcanzado. Desactivando envío de SMS.');
-                            }
-                        });
+                    // twilioClient.messages
+                    //     .create({
+                    //         body: message,
+                    //         from: twilioPhoneNumber,
+                    //         to: recipientPhoneNumber
+                    //     })
+                    //     .then(msg => {
+                    //         console.log(`SMS enviado con SID: ${msg.sid}`);
+                    //         alertSent[deviceId] = true; // Marcar como enviado
+                    //     })
+                    //     .catch(error => {
+                    //         console.error('Error al enviar SMS:', error.message, error.code);
+                    //         if (error.message.includes('exceeded the null daily messages limit')) {
+                    //             canSendSMS = false; // Desactivar envío de SMS si se excede el límite
+                    //             console.log('Límite diario de SMS alcanzado. Desactivando envío de SMS.');
+                    //         }
+                    //     });
+                    console.log(`SMS simulado para ${deviceId}: ${message}`); // Simular envío
                 } else if (!canSendSMS) {
                     console.log(`No se puede enviar SMS para ${deviceId}: límite diario alcanzado`);
                 } else {
