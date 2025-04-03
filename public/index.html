@@ -8,7 +8,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Tu CSS existente se mantiene igual */
         body {
             font-family: 'Inter', sans-serif;
             background-color: #F5F5F5;
@@ -275,6 +274,7 @@
 
     <!-- Scripts -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Cargador dinámico de Google Maps -->
     <script>
         (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
             key: "AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM",
@@ -303,11 +303,52 @@
         const apiBaseUrl = serverUrl;
         const socketUrl = serverUrl;
 
+        // Configuración del caché
+        const CACHE_KEY = 'locationCache';
+        const CACHE_LIMIT = 1000; // Límite de entradas en el caché
+        const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 horas en milisegundos
+
+        // Función para obtener el caché desde localStorage
+        function getLocationCache() {
+            const cache = localStorage.getItem(CACHE_KEY);
+            return cache ? JSON.parse(cache) : {};
+        }
+
+        // Función para guardar el caché en localStorage
+        function saveLocationCache(cache) {
+            // Limitar el número de entradas
+            const entries = Object.entries(cache);
+            if (entries.length > CACHE_LIMIT) {
+                const sortedEntries = entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+                const newCache = Object.fromEntries(sortedEntries.slice(-CACHE_LIMIT));
+                localStorage.setItem(CACHE_KEY, JSON.stringify(newCache));
+            } else {
+                localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+            }
+        }
+
+        // Función para limpiar entradas expiradas del caché
+        function cleanExpiredCache() {
+            const cache = getLocationCache();
+            const now = Date.now();
+            const updatedCache = {};
+
+            for (const [key, value] of Object.entries(cache)) {
+                if (now - value.timestamp < CACHE_EXPIRY) {
+                    updatedCache[key] = value;
+                }
+            }
+
+            saveLocationCache(updatedCache);
+        }
+
         async function initMap() {
             try {
+                // Cargar bibliotecas necesarias
                 await google.maps.importLibrary("maps");
                 await google.maps.importLibrary("geometry");
 
+                // Inicializar el mapa
                 map = new google.maps.Map(document.getElementById('map'), {
                     center: { lat: 19.4326, lng: -99.1332 },
                     zoom: 15,
@@ -318,7 +359,9 @@
                 directionsService = new google.maps.DirectionsService();
                 directionsRenderer = new google.maps.DirectionsRenderer({ suppressMarkers: true });
 
-                socket = io(socketUrl, { timeout: 30000 });
+                socket = io(socketUrl, {
+                    timeout: 30000 // Aumentar el tiempo de espera a 30 segundos
+                });
 
                 socket.on('connect', () => {
                     console.log('Conectado al servidor');
@@ -427,6 +470,9 @@
                 setInterval(() => {
                     Object.keys(markers).forEach(deviceId => checkInactivity(deviceId));
                 }, 60 * 1000);
+
+                // Limpiar el caché al iniciar
+                cleanExpiredCache();
             } catch (error) {
                 console.error('Error al inicializar el mapa:', error);
                 alert('Error al cargar el mapa. Revisa la consola para más detalles.');
@@ -560,39 +606,85 @@
         }
 
         async function getPlaceName(lat, lng) {
+            // Redondear las coordenadas a 6 decimales para evitar pequeñas variaciones
+            const latKey = lat.toFixed(6);
+            const lngKey = lng.toFixed(6);
+            const cacheKey = `${latKey},${lngKey}`;
+            const cache = getLocationCache();
+
+            // Verificar si está en el caché y no ha expirado
+            if (cache[cacheKey]) {
+                const cachedEntry = cache[cacheKey];
+                const now = Date.now();
+                if (now - cachedEntry.timestamp < CACHE_EXPIRY) {
+                    console.log(`Ubicación obtenida del caché para ${cacheKey}: ${cachedEntry.placeName}`);
+                    return cachedEntry.placeName;
+                } else {
+                    // Eliminar entrada expirada
+                    console.log(`Entrada expirada en el caché para ${cacheKey}`);
+                    delete cache[cacheKey];
+                    saveLocationCache(cache);
+                }
+            }
+
+            // Si no está en el caché o ha expirado, hacer la solicitud a la API
             try {
+                console.log(`Solicitando nombre del lugar para ${lat}, ${lng}`);
                 const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM`);
                 const data = await response.json();
+                let placeName = `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback
+
                 if (data.results && data.results.length > 0) {
-                    return data.results[0].formatted_address;
+                    placeName = data.results[0].formatted_address;
+                    console.log(`Nombre del lugar obtenido: ${placeName}`);
+                } else {
+                    console.log(`No se encontraron resultados para ${lat}, ${lng}`);
                 }
-                return `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback si no hay nombre
+
+                // Guardar en el caché
+                cache[cacheKey] = {
+                    placeName: placeName,
+                    timestamp: Date.now()
+                };
+                saveLocationCache(cache);
+                return placeName;
             } catch (error) {
-                console.error('Error al obtener el nombre del lugar:', error);
+                console.error(`Error al obtener el nombre del lugar para ${lat}, ${lng}:`, error);
                 return `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback en caso de error
             }
         }
 
         async function updateLocationHistory(deviceId) {
-            if (!deviceId) return;
-            fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}`)
-                .then(response => response.json())
-                .then(async locations => {
-                    const table = document.getElementById('locationHistoryTable');
-                    table.innerHTML = '';
-                    for (const loc of locations.slice(0, 10)) {
-                        const placeName = await getPlaceName(loc.lat, loc.lng);
-                        const row = document.createElement('tr');
-                        const localTimestamp = new Date(loc.timestamp).toLocaleString('es-MX');
-                        row.innerHTML = `
-                            <td class="border-b py-1">${placeName}</td>
-                            <td class="border-b py-1">${loc.speed || 0} km/h</td>
-                            <td class="border-b py-1">${localTimestamp}</td>
-                        `;
-                        table.appendChild(row);
-                    }
-                })
-                .catch(error => console.error('Error al cargar historial:', error));
+            if (!deviceId) {
+                console.log('No se proporcionó deviceId para actualizar el historial');
+                return;
+            }
+
+            try {
+                console.log(`Obteniendo historial para deviceId: ${deviceId}`);
+                const response = await fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}`);
+                const locations = await response.json();
+                console.log('Datos del historial obtenidos:', locations);
+
+                const table = document.getElementById('locationHistoryTable');
+                table.innerHTML = '';
+
+                for (const loc of locations.slice(0, 10)) {
+                    console.log(`Procesando ubicación: lat=${loc.lat}, lng=${loc.lng}`);
+                    const placeName = await getPlaceName(loc.lat, loc.lng);
+                    const row = document.createElement('tr');
+                    const localTimestamp = new Date(loc.timestamp).toLocaleString('es-MX');
+                    row.innerHTML = `
+                        <td class="border-b py-1">${placeName}</td>
+                        <td class="border-b py-1">${loc.speed || 0} km/h</td>
+                        <td class="border-b py-1">${localTimestamp}</td>
+                    `;
+                    table.appendChild(row);
+                }
+            } catch (error) {
+                console.error('Error al cargar historial:', error);
+                addAlertToLog('Error al cargar el historial: ' + error.message);
+            }
         }
 
         function exportToCSV() {
@@ -844,6 +936,7 @@
             toggleBtn.textContent = alertLog.classList.contains('hidden') ? 'Mostrar Alertas' : 'Ocultar Alertas';
         });
 
+        // Iniciar el mapa
         initMap();
     </script>
 </body>
