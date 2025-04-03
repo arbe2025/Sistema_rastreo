@@ -78,7 +78,6 @@ const checkInactivity = () => {
         SELECT l.device_id, MAX(l.timestamp) as last_update, l.lat, l.lng, d.name 
         FROM locations l
         LEFT JOIN devices d ON l.device_id = d.device_id
-        WHERE d.device_id IS NOT NULL
         GROUP BY l.device_id
     `;
     db.query(query, (err, results) => {
@@ -87,7 +86,7 @@ const checkInactivity = () => {
             return;
         }
         if (!results || results.length === 0) {
-            console.log('No hay ubicaciones registradas para dispositivos activos');
+            console.log('No hay ubicaciones registradas para verificar inactividad');
             return;
         }
 
@@ -98,7 +97,7 @@ const checkInactivity = () => {
             const diffInMinutes = (now - lastUpdate) / (1000 * 60);
             console.log(`Dispositivo ${deviceId}: ${diffInMinutes.toFixed(2)} minutos desde última actualización`);
 
-            // Detectar inactividad después de 7 minutos para alertas al dashboard
+            // Detectar inactividad después de 7 minutos (cambiado de 2 minutos)
             if (diffInMinutes >= 7) {
                 const driverName = location.name || `Chofer ${deviceId}`;
                 const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -108,8 +107,8 @@ const checkInactivity = () => {
                 // Enviar alerta al dashboard
                 io.emit('adminAlert', { deviceId, message });
 
-                // Enviar SMS solo si han pasado 8 minutos y no se ha enviado antes
-                if (diffInMinutes >= 8 && !alertSent[deviceId] && canSendSMS) {
+                // Enviar SMS solo si no se ha enviado antes para este período de inactividad y si está permitido
+                if (!alertSent[deviceId] && canSendSMS) {
                     console.log(`Enviando SMS para ${deviceId}`);
                     // twilioClient.messages
                     //     .create({
@@ -128,11 +127,7 @@ const checkInactivity = () => {
                     //             console.log('Límite diario de SMS alcanzado. Desactivando envío de SMS.');
                     //         }
                     //     });
-                    console.log(`SMS simulado para ${deviceId}: ${message}`);
-                    io.emit('adminAlert', { deviceId, message: `SMS enviado al supervisor para ${deviceId}` });
-                    alertSent[deviceId] = true; // Marcar como enviado
-                } else if (diffInMinutes < 8) {
-                    console.log(`Esperando ${8 - diffInMinutes.toFixed(2)} minutos más para enviar SMS para ${deviceId}`);
+                    console.log(`SMS simulado para ${deviceId}: ${message}`); // Simular envío
                 } else if (!canSendSMS) {
                     console.log(`No se puede enviar SMS para ${deviceId}: límite diario alcanzado`);
                 } else {
