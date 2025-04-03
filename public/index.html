@@ -8,6 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        /* Tu CSS existente se mantiene igual */
         body {
             font-family: 'Inter', sans-serif;
             background-color: #F5F5F5;
@@ -245,8 +246,7 @@
             <table class="w-full text-sm text-gray-700">
                 <thead>
                     <tr>
-                        <th class="border-b py-1">Latitud</th>
-                        <th class="border-b py-1">Longitud</th>
+                        <th class="border-b py-1">Ubicación</th>
                         <th class="border-b py-1">Velocidad</th>
                         <th class="border-b py-1">Fecha/Hora</th>
                     </tr>
@@ -275,7 +275,6 @@
 
     <!-- Scripts -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <!-- Cargador dinámico de Google Maps -->
     <script>
         (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
             key: "AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM",
@@ -297,7 +296,8 @@
         let directionsService;
         let directionsRenderer;
         let lastUpdateTimes = {};
-        const INACTIVITY_THRESHOLD = 7 * 60 * 1000; // Cambiado de 8 a 7 minutos
+        let lastZeroSpeedTimes = {}; // Para rastrear cuando la velocidad es 0
+        const INACTIVITY_THRESHOLD = 8 * 60 * 1000; // 8 minutos
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
@@ -305,11 +305,9 @@
 
         async function initMap() {
             try {
-                // Cargar bibliotecas necesarias
                 await google.maps.importLibrary("maps");
                 await google.maps.importLibrary("geometry");
 
-                // Inicializar el mapa
                 map = new google.maps.Map(document.getElementById('map'), {
                     center: { lat: 19.4326, lng: -99.1332 },
                     zoom: 15,
@@ -320,9 +318,7 @@
                 directionsService = new google.maps.DirectionsService();
                 directionsRenderer = new google.maps.DirectionsRenderer({ suppressMarkers: true });
 
-                socket = io(socketUrl, {
-                    timeout: 30000 // Aumentar el tiempo de espera a 30 segundos
-                });
+                socket = io(socketUrl, { timeout: 30000 });
 
                 socket.on('connect', () => {
                     console.log('Conectado al servidor');
@@ -342,6 +338,15 @@
                 socket.on('updateLocation', (location) => {
                     const { device_id, lat, lng, speed } = location;
                     lastUpdateTimes[device_id] = Date.now();
+
+                    // Actualizar tiempo de velocidad 0
+                    if (speed === 0 || speed === null) {
+                        if (!lastZeroSpeedTimes[device_id]) {
+                            lastZeroSpeedTimes[device_id] = Date.now();
+                        }
+                    } else {
+                        delete lastZeroSpeedTimes[device_id]; // Resetear si se mueve
+                    }
 
                     if (!markers[device_id]) {
                         const deviceName = deviceNames[device_id] || `Unidad ${device_id}`;
@@ -430,10 +435,14 @@
 
         function checkInactivity(deviceId) {
             const now = Date.now();
-            const lastUpdate = lastUpdateTimes[deviceId] || 0;
-            if (now - lastUpdate > INACTIVITY_THRESHOLD) {
-                socket.emit('inactivityAlert', { deviceId, message: `Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 7 min)` });
-                addAlertToLog(`Inactividad detectada para ${deviceNames[deviceId] || deviceId} (> 7 min)`);
+            const lastZeroSpeed = lastZeroSpeedTimes[deviceId] || 0;
+            if (lastZeroSpeed && (now - lastZeroSpeed > INACTIVITY_THRESHOLD)) {
+                socket.emit('inactivityAlert', { 
+                    deviceId, 
+                    message: `Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos` 
+                });
+                addAlertToLog(`Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos`);
+                delete lastZeroSpeedTimes[deviceId]; // Evitar alertas repetidas
             }
         }
 
@@ -550,24 +559,38 @@
             addAlertToLog(`Mapa cambiado a modo ${isDarkMode ? 'oscuro' : 'claro'}`);
         }
 
-        function updateLocationHistory(deviceId) {
+        async function getPlaceName(lat, lng) {
+            try {
+                const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM`);
+                const data = await response.json();
+                if (data.results && data.results.length > 0) {
+                    return data.results[0].formatted_address;
+                }
+                return `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback si no hay nombre
+            } catch (error) {
+                console.error('Error al obtener el nombre del lugar:', error);
+                return `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback en caso de error
+            }
+        }
+
+        async function updateLocationHistory(deviceId) {
             if (!deviceId) return;
             fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}`)
                 .then(response => response.json())
-                .then(locations => {
+                .then(async locations => {
                     const table = document.getElementById('locationHistoryTable');
                     table.innerHTML = '';
-                    locations.slice(0, 10).forEach(loc => {
+                    for (const loc of locations.slice(0, 10)) {
+                        const placeName = await getPlaceName(loc.lat, loc.lng);
                         const row = document.createElement('tr');
                         const localTimestamp = new Date(loc.timestamp).toLocaleString('es-MX');
                         row.innerHTML = `
-                            <td class="border-b py-1">${loc.lat.toFixed(6)}</td>
-                            <td class="border-b py-1">${loc.lng.toFixed(6)}</td>
+                            <td class="border-b py-1">${placeName}</td>
                             <td class="border-b py-1">${loc.speed || 0} km/h</td>
                             <td class="border-b py-1">${localTimestamp}</td>
                         `;
                         table.appendChild(row);
-                    });
+                    }
                 })
                 .catch(error => console.error('Error al cargar historial:', error));
         }
@@ -579,11 +602,13 @@
             }
             fetch(`${apiBaseUrl}/api/locations?deviceId=${selectedDevice}`)
                 .then(response => response.json())
-                .then(locations => {
-                    const csv = [
-                        'Device ID,Latitud,Longitud,Velocidad,Fecha/Hora',
-                        ...locations.map(loc => `${loc.device_id},${loc.lat},${loc.lng},${loc.speed || 0},${new Date(loc.timestamp).toLocaleString('es-MX')}`)
-                    ].join('\n');
+                .then(async locations => {
+                    const csvRows = ['Device ID,Ubicación,Velocidad,Fecha/Hora'];
+                    for (const loc of locations) {
+                        const placeName = await getPlaceName(loc.lat, loc.lng);
+                        csvRows.push(`${loc.device_id},"${placeName}",${loc.speed || 0},${new Date(loc.timestamp).toLocaleString('es-MX')}`);
+                    }
+                    const csv = csvRows.join('\n');
                     const blob = new Blob([csv], { type: 'text/csv' });
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -819,7 +844,6 @@
             toggleBtn.textContent = alertLog.classList.contains('hidden') ? 'Mostrar Alertas' : 'Ocultar Alertas';
         });
 
-        // Iniciar el mapa
         initMap();
     </script>
 </body>

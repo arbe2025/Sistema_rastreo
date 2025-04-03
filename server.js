@@ -97,11 +97,11 @@ const checkInactivity = () => {
             const diffInMinutes = (now - lastUpdate) / (1000 * 60);
             console.log(`Dispositivo ${deviceId}: ${diffInMinutes.toFixed(2)} minutos desde última actualización`);
 
-            // Detectar inactividad después de 2 minutos
-            if (diffInMinutes >= 2) {
+            // Detectar inactividad después de 7 minutos (cambiado de 2 minutos)
+            if (diffInMinutes >= 7) {
                 const driverName = location.name || `Chofer ${deviceId}`;
                 const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-                const message = `${driverName} (ID: ${deviceId}) lleva más de 2 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
+                const message = `${driverName} (ID: ${deviceId}) lleva más de 7 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
                 console.log('Detectada inactividad:', message);
 
                 // Enviar alerta al dashboard
@@ -134,7 +134,7 @@ const checkInactivity = () => {
                     console.log(`SMS ya enviado previamente para ${deviceId}`);
                 }
             } else {
-                // Reiniciar la bandera si el dispositivo se mueve (menos de 2 minutos)
+                // Reiniciar la bandera si el dispositivo se mueve (menos de 7 minutos)
                 if (alertSent[deviceId]) {
                     console.log(`Reiniciando alerta para ${deviceId} - ahora activo`);
                     alertSent[deviceId] = false;
@@ -169,7 +169,7 @@ io.on('connection', (socket) => {
     socket.on('inactivityAlert', (alert) => {
         console.log('Alerta de inactividad recibida:', alert);
         io.emit('adminAlert', alert);
-        io.to(alert.deviceId).emit('driverAlert', 'Por favor, continúe su ruta. Ha estado inactivo por más de 2 minutos.');
+        io.to(alert.deviceId).emit('driverAlert', 'Por favor, continúe su ruta. Ha estado inactivo por más de 7 minutos.');
     });
 
     socket.on('disconnect', () => {
