@@ -296,8 +296,6 @@
         let directionsService;
         let directionsRenderer;
         let lastUpdateTimes = {};
-        let lastZeroSpeedTimes = {}; // Para rastrear cuando la velocidad es 0
-        const INACTIVITY_THRESHOLD = 8 * 60 * 1000; // 8 minutos
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
@@ -382,15 +380,6 @@
                     const { device_id, lat, lng, speed } = location;
                     lastUpdateTimes[device_id] = Date.now();
 
-                    // Actualizar tiempo de velocidad 0
-                    if (speed === 0 || speed === null) {
-                        if (!lastZeroSpeedTimes[device_id]) {
-                            lastZeroSpeedTimes[device_id] = Date.now();
-                        }
-                    } else {
-                        delete lastZeroSpeedTimes[device_id]; // Resetear si se mueve
-                    }
-
                     if (!markers[device_id]) {
                         const deviceName = deviceNames[device_id] || `Unidad ${device_id}`;
                         markers[device_id] = new google.maps.Marker({
@@ -427,7 +416,7 @@
                 });
 
                 socket.on('adminAlert', (alert) => {
-                    addAlertToLog(`Alerta: ${alert.message} (Dispositivo: ${alert.deviceId}) - SMS enviado al supervisor`);
+                    addAlertToLog(`Alerta: ${alert.message}`);
                 });
 
                 socket.on('tripStarted', (deviceId) => {
@@ -467,28 +456,11 @@
                 document.getElementById('btnSaveRoute').addEventListener('click', saveRoute);
                 document.getElementById('btnCloseRoutePanel').addEventListener('click', toggleRoutePanel);
 
-                setInterval(() => {
-                    Object.keys(markers).forEach(deviceId => checkInactivity(deviceId));
-                }, 60 * 1000);
-
                 // Limpiar el caché al iniciar
                 cleanExpiredCache();
             } catch (error) {
                 console.error('Error al inicializar el mapa:', error);
                 alert('Error al cargar el mapa. Revisa la consola para más detalles.');
-            }
-        }
-
-        function checkInactivity(deviceId) {
-            const now = Date.now();
-            const lastZeroSpeed = lastZeroSpeedTimes[deviceId] || 0;
-            if (lastZeroSpeed && (now - lastZeroSpeed > INACTIVITY_THRESHOLD)) {
-                socket.emit('inactivityAlert', { 
-                    deviceId, 
-                    message: `Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos` 
-                });
-                addAlertToLog(`Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos`);
-                delete lastZeroSpeedTimes[deviceId]; // Evitar alertas repetidas
             }
         }
 
