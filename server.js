@@ -4,7 +4,6 @@ const cors = require('cors');
 const socketIo = require('socket.io');
 const http = require('http');
 const twilio = require('twilio');
-const NodeGeocoder = require('node-geocoder'); // Agregar esta dependencia
 require('dotenv').config();
 
 const app = express();
@@ -72,19 +71,11 @@ let canSendSMS = true;
 // Objeto para rastrear el tiempo de la última alerta por dispositivo
 const alertSent = {};
 
-// Configuración de node-geocoder
-const geocoderOptions = {
-    provider: 'google',
-    apiKey: process.env.GOOGLE_MAPS_API_KEY || 'AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM', // Usa tu clave de API (asegúrate de añadirla a .env)
-    formatter: null
-};
-const geocoder = NodeGeocoder(geocoderOptions);
-
 // Función para verificar inactividad y enviar SMS
 const checkInactivity = () => {
     console.log('Verificando inactividad...');
     const query = `
-        SELECT l.device_id, MAX(l.timestamp) as last_update, l.lat, l.lng, l.placeName, d.name 
+        SELECT l.device_id, MAX(l.timestamp) as last_update, l.lat, l.lng, d.name 
         FROM locations l
         LEFT JOIN devices d ON l.device_id = d.device_id
         GROUP BY l.device_id
@@ -109,9 +100,8 @@ const checkInactivity = () => {
             // Detectar inactividad después de 7 minutos (cambiado de 2 minutos)
             if (diffInMinutes >= 7) {
                 const driverName = location.name || `Chofer ${deviceId}`;
-                const placeName = location.placeName || `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}`;
                 const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-                const message = `${driverName} (ID: ${deviceId}) lleva más de 7 minutos detenido en ${placeName}. Última actualización: ${lastUpdateLocal}`;
+                const message = `${driverName} (ID: ${deviceId}) lleva más de 7 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
                 console.log('Detectada inactividad:', message);
 
                 // Enviar alerta al dashboard
@@ -188,7 +178,7 @@ io.on('connection', (socket) => {
 });
 
 // Rutas de la API
-app.post('/api/location', async (req, res) => {
+app.post('/api/location', (req, res) => {
     const { deviceId, lat, lng, speed } = req.body;
     console.log('Datos recibidos:', { deviceId, lat, lng, speed });
 
@@ -197,23 +187,8 @@ app.post('/api/location', async (req, res) => {
         return res.status(400).json({ error: 'Datos incompletos o inválidos', received: { deviceId, lat, lng, speed } });
     }
 
-    let placeName = `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback
-
-    try {
-        // Realizar geocodificación inversa
-        const geoResponse = await geocoder.reverse({ lat, lon: lng });
-        if (geoResponse && geoResponse.length > 0) {
-            placeName = geoResponse[0].formattedAddress || placeName;
-            console.log(`Geocodificación exitosa: ${placeName}`);
-        } else {
-            console.log('No se obtuvo respuesta válida de geocodificación');
-        }
-    } catch (geoError) {
-        console.error('Error en geocodificación:', geoError);
-    }
-
-    const query = 'INSERT INTO locations (device_id, lat, lng, speed, placeName, timestamp) VALUES (?, ?, ?, ?, ?, NOW())';
-    db.query(query, [deviceId, lat, lng, speed || 0, placeName], (err, result) => {
+    const query = 'INSERT INTO locations (device_id, lat, lng, speed, timestamp) VALUES (?, ?, ?, ?, NOW())';
+    db.query(query, [deviceId, lat, lng, speed || 0], (err, result) => {
         if (err) {
             console.error('Error al insertar ubicación:', err.code, err.sqlMessage, { deviceId, lat, lng, speed });
             return res.status(500).json({ error: 'Error interno del servidor', code: err.code, message: err.sqlMessage });
@@ -236,11 +211,11 @@ app.get('/api/devices', (req, res) => {
 
 app.get('/api/locations', (req, res) => {
     const deviceId = req.query.deviceId;
-    let query = 'SELECT device_id, lat, lng, speed, placeName, timestamp FROM locations ORDER BY timestamp DESC LIMIT 100';
+    let query = 'SELECT device_id, lat, lng, speed, timestamp FROM locations ORDER BY timestamp DESC LIMIT 100';
     let params = [];
     
     if (deviceId) {
-        query = 'SELECT device_id, lat, lng, speed, placeName, timestamp FROM locations WHERE device_id = ? ORDER BY timestamp DESC LIMIT 100';
+        query = 'SELECT device_id, lat, lng, speed, timestamp FROM locations WHERE device_id = ? ORDER BY timestamp DESC LIMIT 100';
         params = [deviceId];
     }
 
