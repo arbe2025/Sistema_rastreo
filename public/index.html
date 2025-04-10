@@ -221,6 +221,7 @@
         <button id="btnToggleMapStyle">Cambiar Modo Mapa</button>
         <button id="btnExportCSV">Exportar Historial (CSV)</button>
         <button id="btnAssignRoute">Asignar Ruta</button>
+        <button id="btnClearInactive">Limpiar Inactivos</button>
         <div class="mt-6 text-center">
             <p class="text-sm">Velocidad Actual: <span id="speed">0 km/h</span></p>
         </div>
@@ -307,6 +308,9 @@
 
         // Clave para almacenar el dispositivo seleccionado en localStorage
         const SELECTED_DEVICE_KEY = 'selectedDevice';
+
+        // Tiempo máximo (en milisegundos) para considerar un dispositivo como activo (5 minutos)
+        const ACTIVE_DEVICE_THRESHOLD = 5 * 60 * 1000;
 
         function getLocationCache() {
             const cache = localStorage.getItem(CACHE_KEY);
@@ -533,6 +537,7 @@
                 document.getElementById('btnAssignRoute').addEventListener('click', toggleRoutePanel);
                 document.getElementById('btnSaveRoute').addEventListener('click', saveRoute);
                 document.getElementById('btnCloseRoutePanel').addEventListener('click', toggleRoutePanel);
+                document.getElementById('btnClearInactive').addEventListener('click', clearInactiveDevices);
 
                 cleanExpiredCache();
             } catch (error) {
@@ -545,6 +550,7 @@
             try {
                 const devicesResponse = await fetch(`${apiBaseUrl}/api/devices`);
                 const devices = await devicesResponse.json();
+                const now = Date.now();
 
                 for (const device of devices) {
                     const deviceId = device.device_id;
@@ -557,30 +563,36 @@
                     if (locations.length > 0) {
                         const latestLocation = locations[0];
                         const { lat, lng, speed, timestamp } = latestLocation;
+                        const locationTime = new Date(timestamp).getTime();
 
-                        lastUpdateTimes[deviceId] = new Date(timestamp).getTime();
-                        lastLocations[deviceId] = { lat, lng };
-                        const placeName = await getPlaceName(lat, lng);
-                        lastLocationNames[deviceId] = placeName;
+                        // Solo mostrar dispositivos que hayan enviado una actualización en los últimos 5 minutos
+                        if (now - locationTime <= ACTIVE_DEVICE_THRESHOLD) {
+                            lastUpdateTimes[deviceId] = locationTime;
+                            lastLocations[deviceId] = { lat, lng };
+                            const placeName = await getPlaceName(lat, lng);
+                            lastLocationNames[deviceId] = placeName;
 
-                        markers[deviceId] = new google.maps.Marker({
-                            position: { lat, lng },
-                            map: map,
-                            title: deviceName,
-                            icon: { url: 'https://maps.google.com/mapfiles/kml/shapes/truck.png', scaledSize: new google.maps.Size(32, 32) },
-                        });
+                            markers[deviceId] = new google.maps.Marker({
+                                position: { lat, lng },
+                                map: map,
+                                title: deviceName,
+                                icon: { url: 'https://maps.google.com/mapfiles/kml/shapes/truck.png', scaledSize: new google.maps.Size(32, 32) },
+                            });
 
-                        infoWindows[deviceId] = new google.maps.InfoWindow({
-                            content: deviceName,
-                        });
-                        infoWindows[deviceId].open(map, markers[deviceId]);
+                            infoWindows[deviceId] = new google.maps.InfoWindow({
+                                content: deviceName,
+                            });
+                            infoWindows[deviceId].open(map, markers[deviceId]);
 
-                        if (deviceId === selectedDevice) {
-                            map.panTo({ lat, lng });
-                            document.getElementById('last-location').textContent = placeName;
-                            document.getElementById('speed').textContent = `${speed || 0} km/h`;
-                            updateLocationHistory(deviceId);
-                            loadExistingRoutes(deviceId);
+                            if (deviceId === selectedDevice) {
+                                map.panTo({ lat, lng });
+                                document.getElementById('last-location').textContent = placeName;
+                                document.getElementById('speed').textContent = `${speed || 0} km/h`;
+                                updateLocationHistory(deviceId);
+                                loadExistingRoutes(deviceId);
+                            }
+                        } else {
+                            console.log(`Dispositivo ${deviceId} no está activo (última actualización: ${new Date(locationTime).toLocaleString()})`);
                         }
                     }
                 }
@@ -596,6 +608,46 @@
             } catch (error) {
                 console.error('Error al cargar ubicaciones iniciales:', error);
                 addAlertToLog('Error al cargar ubicaciones iniciales: ' + error.message);
+            }
+        }
+
+        async function clearInactiveDevices() {
+            try {
+                const now = Date.now();
+                const inactiveDevices = [];
+
+                for (const deviceId in lastUpdateTimes) {
+                    if (now - lastUpdateTimes[deviceId] > ACTIVE_DEVICE_THRESHOLD) {
+                        inactiveDevices.push(deviceId);
+                    }
+                }
+
+                for (const deviceId of inactiveDevices) {
+                    if (markers[deviceId]) {
+                        markers[deviceId].setMap(null);
+                        delete markers[deviceId];
+                    }
+                    if (infoWindows[deviceId]) {
+                        infoWindows[deviceId].close();
+                        delete infoWindows[deviceId];
+                    }
+                    delete lastUpdateTimes[deviceId];
+                    delete lastLocations[deviceId];
+                    delete lastLocationNames[deviceId];
+                    addAlertToLog(`Dispositivo inactivo ${deviceNames[deviceId] || deviceId} eliminado del mapa`);
+                }
+
+                // Opcional: Enviar solicitud al servidor para limpiar datos antiguos
+                await fetch(`${apiBaseUrl}/api/clearInactive`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ threshold: ACTIVE_DEVICE_THRESHOLD })
+                });
+
+                addAlertToLog('Dispositivos inactivos limpiados');
+            } catch (error) {
+                console.error('Error al limpiar dispositivos inactivos:', error);
+                addAlertToLog('Error al limpiar dispositivos inactivos: ' + error.message);
             }
         }
 
