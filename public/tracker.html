@@ -39,10 +39,41 @@
         const apiBaseUrl = serverUrl;
         const socketUrl = serverUrl;
 
+        // Verificar conexión a internet
+        function checkInternetConnection() {
+            return navigator.onLine;
+        }
+
+        // Obtener ubicación basada en IP como respaldo
+        async function getLocationFromIP() {
+            try {
+                const response = await fetch('http://ip-api.com/json');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    return {
+                        lat: data.lat,
+                        lng: data.lon,
+                        speed: 0 // No se puede obtener velocidad con IP
+                    };
+                } else {
+                    throw new Error('No se pudo obtener la ubicación basada en IP');
+                }
+            } catch (error) {
+                console.error('Error al obtener ubicación basada en IP:', error);
+                return null;
+            }
+        }
+
         function startTracking() {
             deviceId = document.getElementById('deviceId').value;
             if (!deviceId) {
                 alert('Por favor ingrese un ID de dispositivo');
+                return;
+            }
+
+            // Verificar conexión a internet
+            if (!checkInternetConnection()) {
+                alert('No hay conexión a internet. Por favor, conecta tu dispositivo a datos móviles o Wi-Fi.');
                 return;
             }
 
@@ -81,7 +112,13 @@
             trackingInterval = setInterval(trackLocation, 2000);
         }
 
-        function trackLocation() {
+        async function trackLocation() {
+            // Verificar conexión a internet
+            if (!checkInternetConnection()) {
+                document.getElementById('error').textContent = 'Sin conexión a internet. Por favor, verifica tu conexión.';
+                return;
+            }
+
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
@@ -91,37 +128,53 @@
                         document.getElementById('location').textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
                         document.getElementById('speed').textContent = `${speed} km/h`;
                         console.log(`Enviando ubicación: ${lat}, ${lng} para ${deviceId}, velocidad: ${speed}`);
-                        fetch(`${apiBaseUrl}/api/location`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ deviceId, lat, lng, speed })
-                        })
-                        .then(response => {
-                            if (!response.ok) throw new Error(`Error ${response.status}: ${response.statusText}`);
-                            return response.json();
-                        })
-                        .then(data => {
-                            if (data.status === 'success') {
-                                console.log('Ubicación enviada');
-                                document.getElementById('error').textContent = '';
-                            } else {
-                                document.getElementById('error').textContent = 'Error: ' + (data.error || 'Desconocido');
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error al enviar ubicación:', error);
-                            document.getElementById('error').textContent = 'Error: ' + error.message;
-                        });
+                        sendLocation(lat, lng, speed);
                     },
-                    (error) => {
+                    async (error) => {
                         console.error('Error al obtener geolocalización:', error);
                         document.getElementById('error').textContent = 'Error de geolocalización: ' + error.message;
+
+                        // Intentar obtener ubicación basada en IP como respaldo
+                        const ipLocation = await getLocationFromIP();
+                        if (ipLocation) {
+                            const { lat, lng, speed } = ipLocation;
+                            document.getElementById('location').textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)} (basado en IP)`;
+                            document.getElementById('speed').textContent = `${speed} km/h`;
+                            console.log(`Enviando ubicación basada en IP: ${lat}, ${lng} para ${deviceId}`);
+                            sendLocation(lat, lng, speed);
+                        } else {
+                            document.getElementById('error').textContent = 'No se pudo obtener la ubicación. Verifica tu conexión y permisos de geolocalización.';
+                        }
                     },
-                    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+                    { enableHighAccuracy: true, maximumAge: 0, timeout: 3000 } // Reducir timeout a 3 segundos
                 );
             } else {
                 alert('Geolocalización no soportada por este navegador');
             }
+        }
+
+        function sendLocation(lat, lng, speed) {
+            fetch(`${apiBaseUrl}/api/location`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceId, lat, lng, speed })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error(`Error ${response.status}: ${response.statusText}`);
+                return response.json();
+            })
+            .then(data => {
+                if (data.status === 'success') {
+                    console.log('Ubicación enviada');
+                    document.getElementById('error').textContent = '';
+                } else {
+                    document.getElementById('error').textContent = 'Error: ' + (data.error || 'Desconocido');
+                }
+            })
+            .catch(error => {
+                console.error('Error al enviar ubicación:', error);
+                document.getElementById('error').textContent = 'Error: ' + error.message;
+            });
         }
 
         function endTracking() {

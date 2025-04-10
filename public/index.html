@@ -234,6 +234,7 @@
         <div id="status-panel" class="absolute top-4 right-4 p-4">
             <p>Estado: <span id="connection-status" class="font-semibold text-green-600">Desconectado</span></p>
             <p>Dispositivos: <span id="device-count" class="font-semibold">0</span></p>
+            <p>Última Ubicación: <span id="last-location" class="font-semibold">Esperando...</span></p>
         </div>
         <div id="alert-log" class="absolute">
             <h3 class="text-lg font-semibold mb-2">Registro de Alertas</h3>
@@ -296,7 +297,8 @@
         let directionsService;
         let directionsRenderer;
         let lastUpdateTimes = {};
-        let lastZeroSpeedTimes = {}; // Para rastrear cuando la velocidad es 0
+        let lastZeroSpeedTimes = {};
+        let lastLocationNames = {}; // Para almacenar el nombre del lugar por dispositivo
         const INACTIVITY_THRESHOLD = 8 * 60 * 1000; // 8 minutos
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
@@ -305,18 +307,15 @@
 
         // Configuración del caché
         const CACHE_KEY = 'locationCache';
-        const CACHE_LIMIT = 1000; // Límite de entradas en el caché
-        const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 horas en milisegundos
+        const CACHE_LIMIT = 1000;
+        const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
-        // Función para obtener el caché desde localStorage
         function getLocationCache() {
             const cache = localStorage.getItem(CACHE_KEY);
             return cache ? JSON.parse(cache) : {};
         }
 
-        // Función para guardar el caché en localStorage
         function saveLocationCache(cache) {
-            // Limitar el número de entradas
             const entries = Object.entries(cache);
             if (entries.length > CACHE_LIMIT) {
                 const sortedEntries = entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
@@ -327,7 +326,6 @@
             }
         }
 
-        // Función para limpiar entradas expiradas del caché
         function cleanExpiredCache() {
             const cache = getLocationCache();
             const now = Date.now();
@@ -344,11 +342,9 @@
 
         async function initMap() {
             try {
-                // Cargar bibliotecas necesarias
                 await google.maps.importLibrary("maps");
                 await google.maps.importLibrary("geometry");
 
-                // Inicializar el mapa
                 map = new google.maps.Map(document.getElementById('map'), {
                     center: { lat: 19.4326, lng: -99.1332 },
                     zoom: 15,
@@ -360,7 +356,7 @@
                 directionsRenderer = new google.maps.DirectionsRenderer({ suppressMarkers: true });
 
                 socket = io(socketUrl, {
-                    timeout: 30000 // Aumentar el tiempo de espera a 30 segundos
+                    timeout: 30000
                 });
 
                 socket.on('connect', () => {
@@ -378,18 +374,21 @@
                     document.getElementById('connection-status').classList.add('text-red-600');
                 });
 
-                socket.on('updateLocation', (location) => {
+                socket.on('updateLocation', async (location) => {
                     const { device_id, lat, lng, speed } = location;
                     lastUpdateTimes[device_id] = Date.now();
 
-                    // Actualizar tiempo de velocidad 0
                     if (speed === 0 || speed === null) {
                         if (!lastZeroSpeedTimes[device_id]) {
                             lastZeroSpeedTimes[device_id] = Date.now();
                         }
                     } else {
-                        delete lastZeroSpeedTimes[device_id]; // Resetear si se mueve
+                        delete lastZeroSpeedTimes[device_id];
                     }
+
+                    // Obtener el nombre del lugar
+                    const placeName = await getPlaceName(lat, lng);
+                    lastLocationNames[device_id] = placeName;
 
                     if (!markers[device_id]) {
                         const deviceName = deviceNames[device_id] || `Unidad ${device_id}`;
@@ -419,15 +418,28 @@
                         infoWindows[device_id].setPosition({ lat, lng });
                     }
 
-                    if (device_id === selectedDevice) map.panTo({ lat, lng });
+                    if (device_id === selectedDevice) {
+                        map.panTo({ lat, lng });
+                        document.getElementById('last-location').textContent = placeName;
+                    }
                     document.getElementById('speed').textContent = `${speed || 0} km/h`;
                     updateDistance(device_id, lat, lng);
                     updateLocationHistory(device_id);
                     checkDestinationReached(device_id, lat, lng);
                 });
 
-                socket.on('adminAlert', (alert) => {
-                    addAlertToLog(`Alerta: ${alert.message} (Dispositivo: ${alert.deviceId}) - SMS enviado al supervisor`);
+                socket.on('adminAlert', async (alert) => {
+                    const { deviceId, message } = alert;
+                    // Extraer coordenadas del mensaje si están presentes
+                    const coordsMatch = message.match(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+                    let updatedMessage = message;
+                    if (coordsMatch) {
+                        const lat = parseFloat(coordsMatch[1]);
+                        const lng = parseFloat(coordsMatch[2]);
+                        const placeName = await getPlaceName(lat, lng);
+                        updatedMessage = message.replace(coordsMatch[0], placeName);
+                    }
+                    addAlertToLog(`${updatedMessage} (Dispositivo: ${deviceId}) - SMS enviado al supervisor`);
                 });
 
                 socket.on('tripStarted', (deviceId) => {
@@ -449,6 +461,7 @@
                 document.getElementById('deviceSelect').addEventListener('change', (e) => {
                     selectedDevice = e.target.value;
                     if (markers[selectedDevice]) map.panTo(markers[selectedDevice].getPosition());
+                    document.getElementById('last-location').textContent = lastLocationNames[selectedDevice] || 'Esperando...';
                     updateTripDisplay(selectedDevice);
                     updateLocationHistory(selectedDevice);
                     loadExistingRoutes(selectedDevice);
@@ -471,7 +484,6 @@
                     Object.keys(markers).forEach(deviceId => checkInactivity(deviceId));
                 }, 60 * 1000);
 
-                // Limpiar el caché al iniciar
                 cleanExpiredCache();
             } catch (error) {
                 console.error('Error al inicializar el mapa:', error);
@@ -485,10 +497,10 @@
             if (lastZeroSpeed && (now - lastZeroSpeed > INACTIVITY_THRESHOLD)) {
                 socket.emit('inactivityAlert', { 
                     deviceId, 
-                    message: `Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos` 
+                    message: `Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos en ${lastLocationNames[deviceId] || 'ubicación desconocida'}`
                 });
-                addAlertToLog(`Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos`);
-                delete lastZeroSpeedTimes[deviceId]; // Evitar alertas repetidas
+                addAlertToLog(`Unidad ${deviceNames[deviceId] || deviceId} detenida por más de 8 minutos en ${lastLocationNames[deviceId] || 'ubicación desconocida'}`);
+                delete lastZeroSpeedTimes[deviceId];
             }
         }
 
@@ -606,13 +618,11 @@
         }
 
         async function getPlaceName(lat, lng) {
-            // Redondear las coordenadas a 6 decimales para evitar pequeñas variaciones
             const latKey = lat.toFixed(6);
             const lngKey = lng.toFixed(6);
             const cacheKey = `${latKey},${lngKey}`;
             const cache = getLocationCache();
 
-            // Verificar si está en el caché y no ha expirado
             if (cache[cacheKey]) {
                 const cachedEntry = cache[cacheKey];
                 const now = Date.now();
@@ -620,19 +630,17 @@
                     console.log(`Ubicación obtenida del caché para ${cacheKey}: ${cachedEntry.placeName}`);
                     return cachedEntry.placeName;
                 } else {
-                    // Eliminar entrada expirada
                     console.log(`Entrada expirada en el caché para ${cacheKey}`);
                     delete cache[cacheKey];
                     saveLocationCache(cache);
                 }
             }
 
-            // Si no está en el caché o ha expirado, hacer la solicitud a la API
             try {
                 console.log(`Solicitando nombre del lugar para ${lat}, ${lng}`);
                 const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM`);
                 const data = await response.json();
-                let placeName = `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback
+                let placeName = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
 
                 if (data.results && data.results.length > 0) {
                     placeName = data.results[0].formatted_address;
@@ -641,7 +649,6 @@
                     console.log(`No se encontraron resultados para ${lat}, ${lng}`);
                 }
 
-                // Guardar en el caché
                 cache[cacheKey] = {
                     placeName: placeName,
                     timestamp: Date.now()
@@ -650,7 +657,7 @@
                 return placeName;
             } catch (error) {
                 console.error(`Error al obtener el nombre del lugar para ${lat}, ${lng}:`, error);
-                return `${lat.toFixed(6)}, ${lng.toFixed(6)}`; // Fallback en caso de error
+                return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
             }
         }
 
@@ -936,7 +943,6 @@
             toggleBtn.textContent = alertLog.classList.contains('hidden') ? 'Mostrar Alertas' : 'Ocultar Alertas';
         });
 
-        // Iniciar el mapa
         initMap();
     </script>
 </body>
