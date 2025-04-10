@@ -217,14 +217,12 @@
             <option value="">Selecciona un chofer</option>
         </select>
         <button id="btnRefreshDevices">Actualizar Choferes</button>
-        <button id="btnClearRoute">Limpiar Ruta</button>
         <button id="btnCenterMap">Centrar Mapa</button>
         <button id="btnToggleMapStyle">Cambiar Modo Mapa</button>
         <button id="btnExportCSV">Exportar Historial (CSV)</button>
         <button id="btnAssignRoute">Asignar Ruta</button>
         <div class="mt-6 text-center">
-            <p class="text-sm">Distancia Recorrida: <span id="kmCounter">0.0 km</span></p>
-            <p class="text-sm mt-2">Velocidad Actual: <span id="speed">0 km/h</span></p>
+            <p class="text-sm">Velocidad Actual: <span id="speed">0 km/h</span></p>
         </div>
     </div>
 
@@ -285,11 +283,9 @@
     <script>
         let map;
         let markers = {};
-        let routes = {};
         let infoWindows = {};
         let selectedDevice = null;
         let socket;
-        let tripDistances = {};
         let isDarkMode = false;
         let deviceNames = {};
         let destinationMarkers = {};
@@ -298,7 +294,7 @@
         let directionsRenderer;
         let lastUpdateTimes = {};
         let lastLocationNames = {};
-        let lastLocations = {}; // Para almacenar las últimas coordenadas por dispositivo
+        let lastLocations = {};
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
@@ -308,6 +304,9 @@
         const CACHE_KEY = 'locationCache';
         const CACHE_LIMIT = 1000;
         const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
+
+        // Clave para almacenar el dispositivo seleccionado en localStorage
+        const SELECTED_DEVICE_KEY = 'selectedDevice';
 
         function getLocationCache() {
             const cache = localStorage.getItem(CACHE_KEY);
@@ -345,7 +344,6 @@
             const cacheKey = `${latKey},${lngKey}`;
             const cache = getLocationCache();
 
-            // Verificar si está en el caché
             if (cache[cacheKey]) {
                 const cachedEntry = cache[cacheKey];
                 const now = Date.now();
@@ -359,13 +357,11 @@
                 }
             }
 
-            // Validar coordenadas
             if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
                 console.error(`Coordenadas inválidas: lat=${lat}, lng=${lng}`);
                 return "Ubicación desconocida (coordenadas inválidas)";
             }
 
-            // Intentar con Google Maps Geocoding API
             for (let i = 0; i <= retries; i++) {
                 try {
                     console.log(`Solicitando nombre del lugar a Google Maps para ${lat}, ${lng} (intento ${i + 1}/${retries + 1})`);
@@ -384,7 +380,6 @@
                         throw new Error(`No se encontraron resultados. Estado: ${data.status}`);
                     }
 
-                    // Guardar en el caché
                     cache[cacheKey] = {
                         placeName: placeName,
                         timestamp: Date.now()
@@ -394,7 +389,6 @@
                 } catch (error) {
                     console.error(`Error al obtener el nombre del lugar de Google Maps para ${lat}, ${lng} (intento ${i + 1}/${retries + 1}):`, error.message);
                     if (i === retries) {
-                        // Último intento fallido, intentar con API alternativa
                         console.log(`Intentando con API alternativa (Nominatim) para ${lat}, ${lng}`);
                         try {
                             const nominatimResponse = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
@@ -411,7 +405,6 @@
                                 console.log(`No se encontraron resultados en Nominatim para ${lat}, ${lng}`);
                             }
 
-                            // Guardar en el caché
                             cache[cacheKey] = {
                                 placeName: placeName,
                                 timestamp: Date.now()
@@ -423,7 +416,6 @@
                             return "Ubicación desconocida (error en APIs)";
                         }
                     }
-                    // Esperar antes de reintentar
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
@@ -432,7 +424,6 @@
         async function initMap() {
             try {
                 await google.maps.importLibrary("maps");
-                await google.maps.importLibrary("geometry");
 
                 map = new google.maps.Map(document.getElementById('map'), {
                     center: { lat: 19.4326, lng: -99.1332 },
@@ -448,12 +439,13 @@
                     timeout: 30000
                 });
 
-                socket.on('connect', () => {
+                socket.on('connect', async () => {
                     console.log('Conectado al servidor');
                     document.getElementById('connection-status').textContent = 'Conectado';
                     document.getElementById('connection-status').classList.remove('text-red-600');
                     document.getElementById('connection-status').classList.add('text-green-600');
-                    refreshDevices();
+                    await refreshDevices();
+                    await loadInitialLocations();
                 });
 
                 socket.on('connect_error', (error) => {
@@ -466,9 +458,8 @@
                 socket.on('updateLocation', async (location) => {
                     const { device_id, lat, lng, speed, placeName } = location;
                     lastUpdateTimes[device_id] = Date.now();
-                    lastLocations[device_id] = { lat, lng }; // Almacenar las últimas coordenadas
+                    lastLocations[device_id] = { lat, lng };
 
-                    // Usar el nombre del lugar proporcionado por el servidor, si está disponible
                     let finalPlaceName = placeName;
                     if (!finalPlaceName) {
                         finalPlaceName = await getPlaceName(lat, lng);
@@ -483,23 +474,12 @@
                             title: deviceName,
                             icon: carIcon,
                         });
-                        routes[device_id] = new google.maps.Polyline({
-                            path: [{ lat, lng }],
-                            geodesic: true,
-                            strokeColor: getRandomColor(device_id),
-                            strokeOpacity: 1.0,
-                            strokeWeight: 3,
-                            map: map,
-                        });
                         infoWindows[device_id] = new google.maps.InfoWindow({
                             content: deviceName,
                         });
                         infoWindows[device_id].open(map, markers[device_id]);
                     } else {
                         markers[device_id].setPosition({ lat, lng });
-                        const path = routes[device_id].getPath();
-                        path.push(new google.maps.LatLng(lat, lng));
-                        routes[device_id].setPath(path);
                         infoWindows[device_id].setPosition({ lat, lng });
                     }
 
@@ -508,7 +488,6 @@
                         document.getElementById('last-location').textContent = finalPlaceName;
                     }
                     document.getElementById('speed').textContent = `${speed || 0} km/h`;
-                    updateDistance(device_id, lat, lng);
                     updateLocationHistory(device_id);
                     checkDestinationReached(device_id, lat, lng);
                 });
@@ -520,25 +499,25 @@
 
                 socket.on('tripStarted', (deviceId) => {
                     addAlertToLog(`Viaje iniciado para ${deviceId}`);
-                    tripDistances[deviceId] = 0;
-                    updateTripDisplay(deviceId);
                     if (currentDestinations[deviceId]) plotRoute(deviceId, currentDestinations[deviceId]);
                 });
 
                 socket.on('tripEnded', (deviceId) => {
-                    addAlertToLog(`Viaje finalizado para ${deviceId}. Distancia total: ${tripDistances[deviceId]?.toFixed(2) || '0.0'} km`);
-                    updateTripDisplay(deviceId);
+                    addAlertToLog(`Viaje finalizado para ${deviceId}`);
                     if (markers[deviceId]) markers[deviceId].setMap(null);
-                    if (routes[deviceId]) routes[deviceId].setMap(null);
                     if (infoWindows[deviceId]) infoWindows[deviceId].close();
                     if (directionsRenderer.getMap()) directionsRenderer.setMap(null);
+                    delete markers[deviceId];
+                    delete infoWindows[deviceId];
                 });
+
+                selectedDevice = localStorage.getItem(SELECTED_DEVICE_KEY) || null;
 
                 document.getElementById('deviceSelect').addEventListener('change', (e) => {
                     selectedDevice = e.target.value;
+                    localStorage.setItem(SELECTED_DEVICE_KEY, selectedDevice);
                     if (markers[selectedDevice]) map.panTo(markers[selectedDevice].getPosition());
                     document.getElementById('last-location').textContent = lastLocationNames[selectedDevice] || 'Esperando...';
-                    updateTripDisplay(selectedDevice);
                     updateLocationHistory(selectedDevice);
                     loadExistingRoutes(selectedDevice);
                     const historyPanel = document.getElementById('location-history');
@@ -548,7 +527,6 @@
                 });
 
                 document.getElementById('btnRefreshDevices').addEventListener('click', refreshDevices);
-                document.getElementById('btnClearRoute').addEventListener('click', clearRoute);
                 document.getElementById('btnCenterMap').addEventListener('click', centerMap);
                 document.getElementById('btnToggleMapStyle').addEventListener('click', toggleMapStyle);
                 document.getElementById('btnExportCSV').addEventListener('click', exportToCSV);
@@ -560,6 +538,64 @@
             } catch (error) {
                 console.error('Error al inicializar el mapa:', error);
                 alert('Error al cargar el mapa. Revisa la consola para más detalles.');
+            }
+        }
+
+        async function loadInitialLocations() {
+            try {
+                const devicesResponse = await fetch(`${apiBaseUrl}/api/devices`);
+                const devices = await devicesResponse.json();
+
+                for (const device of devices) {
+                    const deviceId = device.device_id;
+                    const deviceName = device.name;
+                    deviceNames[deviceId] = deviceName;
+
+                    const locationResponse = await fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}&limit=1`);
+                    const locations = await locationResponse.json();
+
+                    if (locations.length > 0) {
+                        const latestLocation = locations[0];
+                        const { lat, lng, speed, timestamp } = latestLocation;
+
+                        lastUpdateTimes[deviceId] = new Date(timestamp).getTime();
+                        lastLocations[deviceId] = { lat, lng };
+                        const placeName = await getPlaceName(lat, lng);
+                        lastLocationNames[deviceId] = placeName;
+
+                        markers[deviceId] = new google.maps.Marker({
+                            position: { lat, lng },
+                            map: map,
+                            title: deviceName,
+                            icon: { url: 'https://maps.google.com/mapfiles/kml/shapes/truck.png', scaledSize: new google.maps.Size(32, 32) },
+                        });
+
+                        infoWindows[deviceId] = new google.maps.InfoWindow({
+                            content: deviceName,
+                        });
+                        infoWindows[deviceId].open(map, markers[deviceId]);
+
+                        if (deviceId === selectedDevice) {
+                            map.panTo({ lat, lng });
+                            document.getElementById('last-location').textContent = placeName;
+                            document.getElementById('speed').textContent = `${speed || 0} km/h`;
+                            updateLocationHistory(deviceId);
+                            loadExistingRoutes(deviceId);
+                        }
+                    }
+                }
+
+                if (selectedDevice) {
+                    const select = document.getElementById('deviceSelect');
+                    select.value = selectedDevice;
+                    const historyPanel = document.getElementById('location-history');
+                    const toggleBtn = document.getElementById('toggleHistoryBtn');
+                    historyPanel.classList.remove('hidden');
+                    toggleBtn.textContent = 'Ocultar Historial';
+                }
+            } catch (error) {
+                console.error('Error al cargar ubicaciones iniciales:', error);
+                addAlertToLog('Error al cargar ubicaciones iniciales: ' + error.message);
             }
         }
 
@@ -578,55 +614,33 @@
             ] : [];
         }
 
-        function getRandomColor(device_id) {
-            const colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF'];
-            return colors[device_id.charCodeAt(0) % colors.length];
-        }
-
-        function refreshDevices() {
-            fetch(`${apiBaseUrl}/api/devices`)
-                .then(response => response.json())
-                .then(devices => {
-                    const select = document.getElementById('deviceSelect');
-                    const routeSelect = document.getElementById('routeDeviceSelect');
-                    select.innerHTML = '<option value="">Selecciona un chofer</option>';
-                    routeSelect.innerHTML = '<option value="">Selecciona un chofer</option>';
-                    devices.forEach(device => {
-                        const option = document.createElement('option');
-                        const routeOption = document.createElement('option');
-                        option.value = device.device_id;
-                        routeOption.value = device.device_id;
-                        option.textContent = `${device.name} (${device.device_id})`;
-                        routeOption.textContent = `${device.name} (${device.device_id})`;
-                        select.appendChild(option);
-                        routeSelect.appendChild(routeOption);
-                        deviceNames[device.device_id] = device.name;
-                    });
-                    document.getElementById('device-count').textContent = devices.length;
-                })
-                .catch(error => {
-                    console.error('Error al actualizar choferes:', error);
-                    addAlertToLog('Error al cargar choferes: ' + error.message);
+        async function refreshDevices() {
+            try {
+                const response = await fetch(`${apiBaseUrl}/api/devices`);
+                const devices = await response.json();
+                const select = document.getElementById('deviceSelect');
+                const routeSelect = document.getElementById('routeDeviceSelect');
+                select.innerHTML = '<option value="">Selecciona un chofer</option>';
+                routeSelect.innerHTML = '<option value="">Selecciona un chofer</option>';
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    const routeOption = document.createElement('option');
+                    option.value = device.device_id;
+                    routeOption.value = device.device_id;
+                    option.textContent = `${device.name} (${device.device_id})`;
+                    routeOption.textContent = `${device.name} (${device.device_id})`;
+                    select.appendChild(option);
+                    routeSelect.appendChild(routeOption);
+                    deviceNames[device.device_id] = device.name;
                 });
-        }
+                document.getElementById('device-count').textContent = devices.length;
 
-        function updateDistance(deviceId, lat, lng) {
-            if (routes[deviceId]) {
-                const path = routes[deviceId].getPath();
-                if (path.getLength() > 1) {
-                    const distance = google.maps.geometry.spherical.computeDistanceBetween(
-                        path.getAt(path.getLength() - 2),
-                        path.getAt(path.getLength() - 1)
-                    ) / 1000;
-                    tripDistances[deviceId] = (tripDistances[deviceId] || 0) + distance;
-                    document.getElementById('kmCounter').textContent = tripDistances[deviceId]?.toFixed(2) || '0.0 km';
+                if (selectedDevice) {
+                    select.value = selectedDevice;
                 }
-            }
-        }
-
-        function updateTripDisplay(deviceId) {
-            if (deviceId) {
-                document.getElementById('kmCounter').textContent = tripDistances[deviceId]?.toFixed(2) || '0.0 km';
+            } catch (error) {
+                console.error('Error al actualizar choferes:', error);
+                addAlertToLog('Error al cargar choferes: ' + error.message);
             }
         }
 
@@ -640,23 +654,6 @@
             p.textContent = `${localTimeString} - ${message} [Registrado: ${localDateString} ${localTimeString}]`;
             logEntries.appendChild(p);
             logEntries.parentElement.scrollTop = logEntries.parentElement.scrollHeight;
-        }
-
-        function clearRoute() {
-            if (selectedDevice && routes[selectedDevice]) {
-                routes[selectedDevice].setMap(null);
-                routes[selectedDevice] = new google.maps.Polyline({
-                    path: [markers[selectedDevice].getPosition()],
-                    geodesic: true,
-                    strokeColor: getRandomColor(selectedDevice),
-                    strokeOpacity: 1.0,
-                    strokeWeight: 3,
-                    map: map,
-                });
-                addAlertToLog(`Ruta limpiada para ${selectedDevice}`);
-            } else {
-                alert('Selecciona un dispositivo primero');
-            }
         }
 
         function centerMap() {
