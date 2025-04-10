@@ -691,7 +691,7 @@
                 const table = document.getElementById('locationHistoryTable');
                 table.innerHTML = '';
 
-                for (const loc of locations.slice(0, 10 W)) {
+                for (const loc of locations.slice(0, 10)) {
                     console.log(`Procesando ubicación: lat=${loc.lat}, lng=${loc.lng}`);
                     const placeName = await getPlaceName(loc.lat, loc.lng);
                     const row = document.createElement('tr');
