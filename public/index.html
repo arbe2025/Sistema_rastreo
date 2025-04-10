@@ -299,6 +299,8 @@
         let lastUpdateTimes = {};
         let lastLocationNames = {};
         let lastLocations = {}; // Para almacenar las últimas coordenadas por dispositivo
+        let smsSentToday = 0;
+        let lastSmsDate = null;
 
         const serverUrl = 'https://sistema-rastreo.onrender.com';
         const apiBaseUrl = serverUrl;
@@ -337,6 +339,15 @@
             }
 
             saveLocationCache(updatedCache);
+        }
+
+        // Reset SMS counter daily
+        function resetSmsCounter() {
+            const today = new Date().toLocaleDateString('es-MX');
+            if (lastSmsDate !== today) {
+                smsSentToday = 0;
+                lastSmsDate = today;
+            }
         }
 
         async function getPlaceName(lat, lng, retries = 2) {
@@ -392,7 +403,7 @@
                     saveLocationCache(cache);
                     return placeName;
                 } catch (error) {
-                    console.error(`Error al obtener el nombre del lugar de Google Maps para ${lat}, ${lng} (intento ${i + 1}/${retries + 1}):`, error.message);
+                    console.error(`Google Maps API error: ${error.message}, status: ${data?.status || 'unknown'}`);
                     if (i === retries) {
                         // Último intento fallido, intentar con API alternativa
                         console.log(`Intentando con API alternativa (Nominatim) para ${lat}, ${lng}`);
@@ -536,6 +547,7 @@
 
                 document.getElementById('deviceSelect').addEventListener('change', (e) => {
                     selectedDevice = e.target.value;
+                    console.log('Selected device:', selectedDevice, 'Name:', deviceNames[selectedDevice]); // Debug
                     if (markers[selectedDevice]) map.panTo(markers[selectedDevice].getPosition());
                     document.getElementById('last-location').textContent = lastLocationNames[selectedDevice] || 'Esperando...';
                     updateTripDisplay(selectedDevice);
@@ -557,6 +569,9 @@
                 document.getElementById('btnCloseRoutePanel').addEventListener('click', toggleRoutePanel);
 
                 cleanExpiredCache();
+
+                // Start checking for stopped devices
+                setInterval(checkForStoppedDevices, 60000); // Check every minute
             } catch (error) {
                 console.error('Error al inicializar el mapa:', error);
                 alert('Error al cargar el mapa. Revisa la consola para más detalles.');
@@ -601,6 +616,7 @@
                         select.appendChild(option);
                         routeSelect.appendChild(routeOption);
                         deviceNames[device.device_id] = device.name;
+                        console.log('Device added:', device.device_id, device.name); // Debug
                     });
                     document.getElementById('device-count').textContent = devices.length;
                 })
@@ -640,6 +656,54 @@
             p.textContent = `${localTimeString} - ${message} [Registrado: ${localDateString} ${localTimeString}]`;
             logEntries.appendChild(p);
             logEntries.parentElement.scrollTop = logEntries.parentElement.scrollHeight;
+
+            // Check SMS limit before sending
+            resetSmsCounter();
+            if (smsSentToday >= 1) {
+                console.log('SMS limit reached for today, skipping SMS send');
+                return;
+            }
+
+            // Send SMS to supervisor
+            fetch(`${apiBaseUrl}/api/sendSMS`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    smsSentToday++;
+                    console.log('SMS sent successfully:', message);
+                } else {
+                    console.error('Failed to send SMS:', data.error);
+                    p.textContent += ` [Error al enviar SMS: ${data.error}]`;
+                }
+            })
+            .catch(error => {
+                console.error('Error sending SMS:', error);
+                p.textContent += ` [Error al enviar SMS: ${error.message}]`;
+            });
+        }
+
+        function checkForStoppedDevices() {
+            if (!selectedDevice) {
+                console.log('No device selected, skipping stopped device check');
+                return;
+            }
+
+            const now = Date.now();
+            const lastUpdate = lastUpdateTimes[selectedDevice];
+            const deviceName = deviceNames[selectedDevice] || `Unidad ${selectedDevice}`;
+            const lastLocationName = lastLocationNames[selectedDevice] || 'Ubicación desconocida (error en APIs)';
+
+            if (lastUpdate) {
+                const timeDiffMinutes = (now - lastUpdate) / (1000 * 60); // Convert to minutes
+                if (timeDiffMinutes > 7) {
+                    const lastUpdateDate = new Date(lastUpdate).toLocaleString('es-MX');
+                    addAlertToLog(`${deviceName} (ID: ${selectedDevice}) lleva más de 7 minutos detenido en ${lastLocationName}. Última actualización: ${lastUpdateDate}`);
+                }
+            }
         }
 
         function clearRoute() {
@@ -927,37 +991,25 @@
             if (!currentDestinations[deviceId] || !destinationMarkers[deviceId]) return;
 
             const currentPosition = new google.maps.LatLng(lat, lng);
-            currentDestinations[deviceId].forEach((dest, index) => {
-                const destPosition = new google.maps.LatLng(dest.lat, dest.lng);
+            destinationMarkers[deviceId].forEach((marker, index) => {
+                const destPosition = marker.getPosition();
                 const distance = google.maps.geometry.spherical.computeDistanceBetween(currentPosition, destPosition);
-                if (distance < 50 && destinationMarkers[deviceId][index].getIcon().fillColor !== '#00FF00') {
-                    destinationMarkers[deviceId][index].setIcon({
-                        path: google.maps.SymbolPath.CIRCLE,
-                        scale: 8,
-                        fillColor: '#00FF00',
-                        fillOpacity: 1,
-                        strokeWeight: 1,
-                        strokeColor: '#FFFFFF'
-                    });
-                    addAlertToLog(`Destino ${index + 1} alcanzado por ${deviceNames[deviceId]} (${deviceId})`);
+                if (distance < 50) { // 50 meters threshold
+                    addAlertToLog(`Unidad ${deviceId} ha llegado al destino ${index + 1}`);
+                    marker.setMap(null);
+                    destinationMarkers[deviceId].splice(index, 1);
+                    currentDestinations[deviceId].splice(index, 1);
+                    if (currentDestinations[deviceId].length > 0) {
+                        plotRoute(deviceId, currentDestinations[deviceId]);
+                    } else {
+                        addAlertToLog(`Unidad ${deviceId} ha completado su ruta`);
+                        if (directionsRenderer.getMap()) directionsRenderer.setMap(null);
+                    }
                 }
             });
         }
 
-        document.getElementById('toggleHistoryBtn').addEventListener('click', () => {
-            const historyPanel = document.getElementById('location-history');
-            const toggleBtn = document.getElementById('toggleHistoryBtn');
-            historyPanel.classList.toggle('hidden');
-            toggleBtn.textContent = historyPanel.classList.contains('hidden') ? 'Mostrar Historial' : 'Ocultar Historial';
-        });
-
-        document.getElementById('toggleAlertLogBtn').addEventListener('click', () => {
-            const alertLog = document.getElementById('alert-log');
-            const toggleBtn = document.getElementById('toggleAlertLogBtn');
-            alertLog.classList.toggle('hidden');
-            toggleBtn.textContent = alertLog.classList.contains('hidden') ? 'Mostrar Alertas' : 'Ocultar Alertas';
-        });
-
+        // Initialize the map
         initMap();
     </script>
 </body>
