@@ -309,9 +309,6 @@
         const CACHE_LIMIT = 1000;
         const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
-        // Clave para almacenar el dispositivo seleccionado en localStorage
-        const SELECTED_DEVICE_KEY = 'selectedDevice';
-
         function getLocationCache() {
             const cache = localStorage.getItem(CACHE_KEY);
             return cache ? JSON.parse(cache) : {};
@@ -451,13 +448,12 @@
                     timeout: 30000
                 });
 
-                socket.on('connect', async () => {
+                socket.on('connect', () => {
                     console.log('Conectado al servidor');
                     document.getElementById('connection-status').textContent = 'Conectado';
                     document.getElementById('connection-status').classList.remove('text-red-600');
                     document.getElementById('connection-status').classList.add('text-green-600');
-                    await refreshDevices();
-                    await loadInitialLocations(); // Cargar ubicaciones iniciales al conectar
+                    refreshDevices();
                 });
 
                 socket.on('connect_error', (error) => {
@@ -536,17 +532,10 @@
                     if (routes[deviceId]) routes[deviceId].setMap(null);
                     if (infoWindows[deviceId]) infoWindows[deviceId].close();
                     if (directionsRenderer.getMap()) directionsRenderer.setMap(null);
-                    delete markers[deviceId];
-                    delete routes[deviceId];
-                    delete infoWindows[deviceId];
                 });
-
-                // Cargar el dispositivo seleccionado desde localStorage
-                selectedDevice = localStorage.getItem(SELECTED_DEVICE_KEY) || null;
 
                 document.getElementById('deviceSelect').addEventListener('change', (e) => {
                     selectedDevice = e.target.value;
-                    localStorage.setItem(SELECTED_DEVICE_KEY, selectedDevice); // Guardar en localStorage
                     if (markers[selectedDevice]) map.panTo(markers[selectedDevice].getPosition());
                     document.getElementById('last-location').textContent = lastLocationNames[selectedDevice] || 'Esperando...';
                     updateTripDisplay(selectedDevice);
@@ -574,96 +563,6 @@
             }
         }
 
-        // Nueva función para cargar las ubicaciones iniciales de todos los dispositivos
-        async function loadInitialLocations() {
-            try {
-                const devicesResponse = await fetch(`${apiBaseUrl}/api/devices`);
-                const devices = await devicesResponse.json();
-
-                for (const device of devices) {
-                    const deviceId = device.device_id;
-                    const deviceName = device.name;
-                    deviceNames[deviceId] = deviceName;
-
-                    // Obtener la última ubicación del dispositivo
-                    const locationResponse = await fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}&limit=1`);
-                    const locations = await locationResponse.json();
-
-                    if (locations.length > 0) {
-                        const latestLocation = locations[0];
-                        const { lat, lng, speed, timestamp } = latestLocation;
-
-                        lastUpdateTimes[deviceId] = new Date(timestamp).getTime();
-                        lastLocations[deviceId] = { lat, lng };
-                        const placeName = await getPlaceName(lat, lng);
-                        lastLocationNames[deviceId] = placeName;
-
-                        // Crear marcador
-                        markers[deviceId] = new google.maps.Marker({
-                            position: { lat, lng },
-                            map: map,
-                            title: deviceName,
-                            icon: { url: 'https://maps.google.com/mapfiles/kml/shapes/truck.png', scaledSize: new google.maps.Size(32, 32) },
-                        });
-
-                        // Obtener historial de ubicaciones para reconstruir la ruta
-                        const historyResponse = await fetch(`${apiBaseUrl}/api/locations?deviceId=${deviceId}`);
-                        const history = await historyResponse.json();
-                        const path = history.map(loc => ({ lat: loc.lat, lng: loc.lng }));
-
-                        // Crear ruta
-                        routes[deviceId] = new google.maps.Polyline({
-                            path: path,
-                            geodesic: true,
-                            strokeColor: getRandomColor(deviceId),
-                            strokeOpacity: 1.0,
-                            strokeWeight: 3,
-                            map: map,
-                        });
-
-                        // Crear ventana de información
-                        infoWindows[deviceId] = new google.maps.InfoWindow({
-                            content: deviceName,
-                        });
-                        infoWindows[deviceId].open(map, markers[deviceId]);
-
-                        // Calcular distancia recorrida
-                        let distance = 0;
-                        for (let i = 1; i < path.length; i++) {
-                            distance += google.maps.geometry.spherical.computeDistanceBetween(
-                                new google.maps.LatLng(path[i - 1].lat, path[i - 1].lng),
-                                new google.maps.LatLng(path[i].lat, path[i].lng)
-                            ) / 1000;
-                        }
-                        tripDistances[deviceId] = distance;
-
-                        // Si el dispositivo es el seleccionado, actualizar la UI
-                        if (deviceId === selectedDevice) {
-                            map.panTo({ lat, lng });
-                            document.getElementById('last-location').textContent = placeName;
-                            document.getElementById('speed').textContent = `${speed || 0} km/h`;
-                            document.getElementById('kmCounter').textContent = distance.toFixed(2) + ' km';
-                            updateLocationHistory(deviceId);
-                            loadExistingRoutes(deviceId);
-                        }
-                    }
-                }
-
-                // Restaurar el dispositivo seleccionado en el dropdown
-                if (selectedDevice) {
-                    const select = document.getElementById('deviceSelect');
-                    select.value = selectedDevice;
-                    const historyPanel = document.getElementById('location-history');
-                    const toggleBtn = document.getElementById('toggleHistoryBtn');
-                    historyPanel.classList.remove('hidden');
-                    toggleBtn.textContent = 'Ocultar Historial';
-                }
-            } catch (error) {
-                console.error('Error al cargar ubicaciones iniciales:', error);
-                addAlertToLog('Error al cargar ubicaciones iniciales: ' + error.message);
-            }
-        }
-
         function getMapStyle() {
             return isDarkMode ? [
                 { elementType: "geometry", stylers: [{ color: "#1A3C34" }] },
@@ -684,35 +583,31 @@
             return colors[device_id.charCodeAt(0) % colors.length];
         }
 
-        async function refreshDevices() {
-            try {
-                const response = await fetch(`${apiBaseUrl}/api/devices`);
-                const devices = await response.json();
-                const select = document.getElementById('deviceSelect');
-                const routeSelect = document.getElementById('routeDeviceSelect');
-                select.innerHTML = '<option value="">Selecciona un chofer</option>';
-                routeSelect.innerHTML = '<option value="">Selecciona un chofer</option>';
-                devices.forEach(device => {
-                    const option = document.createElement('option');
-                    const routeOption = document.createElement('option');
-                    option.value = device.device_id;
-                    routeOption.value = device.device_id;
-                    option.textContent = `${device.name} (${device.device_id})`;
-                    routeOption.textContent = `${device.name} (${device.device_id})`;
-                    select.appendChild(option);
-                    routeSelect.appendChild(routeOption);
-                    deviceNames[device.device_id] = device.name;
+        function refreshDevices() {
+            fetch(`${apiBaseUrl}/api/devices`)
+                .then(response => response.json())
+                .then(devices => {
+                    const select = document.getElementById('deviceSelect');
+                    const routeSelect = document.getElementById('routeDeviceSelect');
+                    select.innerHTML = '<option value="">Selecciona un chofer</option>';
+                    routeSelect.innerHTML = '<option value="">Selecciona un chofer</option>';
+                    devices.forEach(device => {
+                        const option = document.createElement('option');
+                        const routeOption = document.createElement('option');
+                        option.value = device.device_id;
+                        routeOption.value = device.device_id;
+                        option.textContent = `${device.name} (${device.device_id})`;
+                        routeOption.textContent = `${device.name} (${device.device_id})`;
+                        select.appendChild(option);
+                        routeSelect.appendChild(routeOption);
+                        deviceNames[device.device_id] = device.name;
+                    });
+                    document.getElementById('device-count').textContent = devices.length;
+                })
+                .catch(error => {
+                    console.error('Error al actualizar choferes:', error);
+                    addAlertToLog('Error al cargar choferes: ' + error.message);
                 });
-                document.getElementById('device-count').textContent = devices.length;
-
-                // Restaurar el dispositivo seleccionado después de actualizar la lista
-                if (selectedDevice) {
-                    select.value = selectedDevice;
-                }
-            } catch (error) {
-                console.error('Error al actualizar choferes:', error);
-                addAlertToLog('Error al cargar choferes: ' + error.message);
-            }
         }
 
         function updateDistance(deviceId, lat, lng) {
@@ -758,8 +653,6 @@
                     strokeWeight: 3,
                     map: map,
                 });
-                tripDistances[selectedDevice] = 0; // Resetear distancia
-                updateTripDisplay(selectedDevice);
                 addAlertToLog(`Ruta limpiada para ${selectedDevice}`);
             } else {
                 alert('Selecciona un dispositivo primero');
