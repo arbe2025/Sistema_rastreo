@@ -4,6 +4,7 @@ const cors = require('cors');
 const socketIo = require('socket.io');
 const http = require('http');
 const twilio = require('twilio');
+const fetch = require('node-fetch'); // Agregar node-fetch para hacer solicitudes HTTP
 require('dotenv').config();
 
 const app = express();
@@ -71,6 +72,21 @@ let canSendSMS = true;
 // Objeto para rastrear el tiempo de la última alerta por dispositivo
 const alertSent = {};
 
+// Función para obtener el nombre del lugar desde Google Maps Geocoding API
+async function getPlaceName(lat, lng) {
+    try {
+        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyD-jiDxqTS_5ey5hr9WdaUO3AJ0Q4N_-MM`);
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+            return data.results[0].formatted_address;
+        }
+        return "Ubicación desconocida";
+    } catch (error) {
+        console.error(`Error al obtener el nombre del lugar para ${lat}, ${lng}:`, error);
+        return "Ubicación desconocida";
+    }
+}
+
 // Función para verificar inactividad y enviar SMS
 const checkInactivity = () => {
     console.log('Verificando inactividad...');
@@ -80,7 +96,7 @@ const checkInactivity = () => {
         LEFT JOIN devices d ON l.device_id = d.device_id
         GROUP BY l.device_id
     `;
-    db.query(query, (err, results) => {
+    db.query(query, async (err, results) => {
         if (err) {
             console.error('Error al verificar inactividad:', err);
             return;
@@ -91,17 +107,19 @@ const checkInactivity = () => {
         }
 
         const now = new Date();
-        results.forEach(location => {
+        for (const location of results) {
             const deviceId = location.device_id;
             const lastUpdate = new Date(location.last_update);
             const diffInMinutes = (now - lastUpdate) / (1000 * 60);
             console.log(`Dispositivo ${deviceId}: ${diffInMinutes.toFixed(2)} minutos desde última actualización`);
 
-            // Detectar inactividad después de 7 minutos (cambiado de 2 minutos)
+            // Detectar inactividad después de 7 minutos
             if (diffInMinutes >= 7) {
                 const driverName = location.name || `Chofer ${deviceId}`;
                 const lastUpdateLocal = lastUpdate.toLocaleString('es-MX', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-                const message = `${driverName} (ID: ${deviceId}) lleva más de 7 minutos detenido en ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}. Última actualización: ${lastUpdateLocal}`;
+                // Obtener el nombre del lugar
+                const placeName = await getPlaceName(location.lat, location.lng);
+                const message = `${driverName} (ID: ${deviceId}) lleva más de 7 minutos detenido en ${placeName}. Última actualización: ${lastUpdateLocal}`;
                 console.log('Detectada inactividad:', message);
 
                 // Enviar alerta al dashboard
@@ -140,7 +158,7 @@ const checkInactivity = () => {
                     alertSent[deviceId] = false;
                 }
             }
-        });
+        }
     });
 };
 
@@ -178,7 +196,7 @@ io.on('connection', (socket) => {
 });
 
 // Rutas de la API
-app.post('/api/location', (req, res) => {
+app.post('/api/location', async (req, res) => {
     const { deviceId, lat, lng, speed } = req.body;
     console.log('Datos recibidos:', { deviceId, lat, lng, speed });
 
@@ -187,13 +205,16 @@ app.post('/api/location', (req, res) => {
         return res.status(400).json({ error: 'Datos incompletos o inválidos', received: { deviceId, lat, lng, speed } });
     }
 
+    // Obtener el nombre del lugar
+    const placeName = await getPlaceName(lat, lng);
+
     const query = 'INSERT INTO locations (device_id, lat, lng, speed, timestamp) VALUES (?, ?, ?, ?, NOW())';
     db.query(query, [deviceId, lat, lng, speed || 0], (err, result) => {
         if (err) {
             console.error('Error al insertar ubicación:', err.code, err.sqlMessage, { deviceId, lat, lng, speed });
             return res.status(500).json({ error: 'Error interno del servidor', code: err.code, message: err.sqlMessage });
         }
-        io.emit('updateLocation', { device_id: deviceId, lat, lng, speed: speed || 0 });
+        io.emit('updateLocation', { device_id: deviceId, lat, lng, speed: speed || 0, placeName });
         res.json({ status: 'success', id: result.insertId });
     });
 });
