@@ -1,5 +1,6 @@
 const CACHE_NAME = 'arbe-tracking-v1';
 const urlsToCache = [
+    '/',  // Añade esto
     '/tracker.html',
     '/manifest.json',
     '/icon-192x192.png',
@@ -11,6 +12,7 @@ self.addEventListener('install', (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(urlsToCache))
+            .catch((error) => console.error('Error en install:', error))  // Añade esto para depurar
     );
 });
 
